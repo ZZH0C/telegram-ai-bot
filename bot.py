@@ -1,7 +1,9 @@
 import os
 import logging
+import html
 from dotenv import load_dotenv
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
@@ -10,25 +12,24 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = os.getenv("OPENROUTER_MODEL", "tencent/hy3:free")
+MODEL_NAME = os.getenv("OPENROUTER_MODEL")
 
-# Initialize OpenRouter client (OpenAI-compatible)
+# Initialize OpenRouter client
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
     timeout=30.0
 )
 
-# Simple in-memory conversation history (per user)
+# Simple in-memory conversation history
 user_histories = {}
-
-# Keep max 10 message pairs per user to avoid context overflow
 MAX_HISTORY = 20
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Hello! I'm an AI assistant powered by OpenRouter.\n"
-        "Send me any message and I'll reply. Type /clear to reset conversation."
+        "Send me any message and I'll reply. Conversation history limit currently is {MAX_HISTORY} messages.\n"
+        "Type /clear to reset conversation."
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,14 +44,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in user_histories:
         user_histories[user_id] = []
 
-    # Add user message
     user_histories[user_id].append({"role": "user", "content": text})
 
-    # Trim history if too long
     if len(user_histories[user_id]) > MAX_HISTORY:
         user_histories[user_id] = user_histories[user_id][-MAX_HISTORY:]
 
+    # 1. Show "typing..." status
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING
+    )
+
     try:
+        # 2. Call OpenRouter API
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=user_histories[user_id],
@@ -60,9 +66,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ai_reply = response.choices[0].message.content
         user_histories[user_id].append({"role": "assistant", "content": ai_reply})
         await update.message.reply_text(ai_reply)
+        
     except Exception as e:
         logging.error(f"OpenRouter API error: {e}")
-        await update.message.reply_text("⚠️ I couldn't process your request right now. Please try again in a moment.")
+        
+        # Remove the failed message from history so it doesn't break future context
+        user_histories[user_id].pop() 
+        
+        # 3. Format error as monospace using HTML
+        # We use html.escape to prevent breaking the formatting if the error contains < or >
+        error_text = html.escape(str(e))
+        await update.message.reply_text(
+            f"<b>⚠️ API Error:</b>\n<code>{error_text}</code>", 
+            parse_mode="HTML"
+        )
 
 def main():
     logging.basicConfig(
@@ -71,12 +88,10 @@ def main():
     )
     
     if not BOT_TOKEN or not OPENROUTER_API_KEY:
-        raise ValueError("Missing TG_BOT_TOKEN or OPENROUTER_API_KEY in .env")
+        raise ValueError("Missing tokens in .env")
 
-    # Build the bot application
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Register handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_history))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
