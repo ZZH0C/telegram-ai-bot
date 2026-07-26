@@ -32,7 +32,7 @@ MAX_HISTORY = 20
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Hello! I'm an AI assistant powered by OpenRouter.\n"
-        "Send me any message and I'll reply. Conversation history limit currently is {} messages.\n".format(MAX_HISTORY)
+        f"Send me any message and I'll reply. Conversation history limit currently is {MAX_HISTORY} messages.\n"
         "Type /clear to reset conversation."
     )
 
