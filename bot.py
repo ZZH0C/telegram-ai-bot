@@ -19,6 +19,10 @@ client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
     timeout=30.0
+    default_headers={
+        "HTTP-Referer": "https://github.com/ZZH0C/telegram-ai-bot", 
+        "X-Title": "Telegram AI Bot"
+    }
 )
 
 # Simple in-memory conversation history
@@ -28,7 +32,7 @@ MAX_HISTORY = 20
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Hello! I'm an AI assistant powered by OpenRouter.\n"
-        "Send me any message and I'll reply. Conversation history limit currently is {MAX_HISTORY} messages.\n"
+        "Send me any message and I'll reply. Conversation history limit currently is {} messages.\n".format(MAX_HISTORY)
         "Type /clear to reset conversation."
     )
 
