@@ -14,6 +14,9 @@ BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_NAME = os.getenv("OPENROUTER_MODEL")
 
+SYSTEM_PROMPT = "Your answer should contain minimal required info. Less is better. It should contain less than 1200 characters. Be direct and concise."
+
+
 # Initialize OpenRouter client
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -60,11 +63,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
+
+        messages_for_api = [{"role": "system", "content": SYSTEM_PROMPT}] + user_histories[user_id]
+
         # 2. Call OpenRouter API
         response = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=user_histories[user_id],
-            max_tokens=512,
+            messages=messages_for_api,
+            max_tokens=1000,
             temperature=0.7
         )
         ai_reply = response.choices[0].message.content
