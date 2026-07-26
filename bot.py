@@ -18,7 +18,7 @@ MODEL_NAME = os.getenv("OPENROUTER_MODEL")
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
-    timeout=30.0
+    timeout=30.0,
     default_headers={
         "HTTP-Referer": "https://github.com/ZZH0C/telegram-ai-bot", 
         "X-Title": "Telegram AI Bot"
