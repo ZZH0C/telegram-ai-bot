@@ -2,8 +2,7 @@ import os
 import logging
 import html
 import re
-import base64
-import tempfile
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ChatAction
@@ -14,7 +13,6 @@ from openai import OpenAI
 # Load environment variables
 load_dotenv()
 
-# CONSTANT: Bot username (without the @)
 BOT_USERNAME = "arc_pet_bot"
 
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -37,13 +35,20 @@ client = OpenAI(
     }
 )
 
-# Private chat history
 user_histories = {}
 MAX_HISTORY = 20
 
-# Group chat rolling buffer (in-memory only, clears on restart)
 group_histories = {}
 MAX_GROUP_HISTORY = 200
+
+async def send_typing_loop(bot, chat_id):
+    """Keep sending typing action every 4 seconds until cancelled."""
+    try:
+        while True:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
 
 def format_for_telegram(text: str) -> str:
     """Converts standard Markdown from AI to Telegram-compatible HTML."""
@@ -55,14 +60,15 @@ def format_for_telegram(text: str) -> str:
     text = re.sub(r'\*([^\n*]+)\*', r'<i>\1</i>', text)
     return text
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 Hello! I'm @{BOT_USERNAME}, an AI assistant powered by OpenRouter.\n"
-        f"Send me any message (or photo!) and I'll reply. History limit: {MAX_HISTORY} messages.\n"
-        f"In groups, tag me (@{BOT_USERNAME}) to talk. Use '@{BOT_USERNAME} analyze [10-100]' to analyze recent chat.\n\n"
+        f"Send me any message and I'll reply. History limit: {MAX_HISTORY} messages.\n\n"
+        f"In groups, tag me (@{BOT_USERNAME}) to talk.\n"
+        f"Use '@{BOT_USERNAME} analyze [5-100]' (or 'анализ [5-100]') to analyze the last N(or 50 if empty) messages in the chat. "
+        f"I'll look for debates and tell you who was right with proof. No additional info required.\n\n"
         "In case of error try same message again.\n"
-        "V0.14"
+        "V0.15"
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -76,21 +82,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.message.chat.type
     is_group = chat_type in ['group', 'supergroup']
     
-    text = update.message.text or update.message.caption or ""
+    text = update.message.text or ""
     is_mentioned = is_group and f"@{BOT_USERNAME.lower()}" in text.lower()
-
-    # Handle Image (Download & Convert to Base64 for API)
-    image_content = None
-    if update.message.photo:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        
-        with tempfile.NamedTemporaryFile(delete=True, suffix=".jpg") as tmp:
-            await file.download(custom_path=tmp.name)
-            with open(tmp.name, "rb") as f:
-                img_base64 = base64.b64encode(f.read()).decode('utf-8')
-        image_content = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
 
     # Maintain Group History Buffer
     if is_group:
@@ -105,44 +98,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(group_histories[chat_id]) > MAX_GROUP_HISTORY:
             group_histories[chat_id].pop(0)
 
-    # Routing Logic
+    # Start typing indicator loop
+    typing_task = asyncio.create_task(send_typing_loop(context.bot, chat_id))
+
     try:
-        # --- ROUTE A: Group Analyze Command ---
-        if is_group and is_mentioned and re.search(r'\banalyze\b', text, re.IGNORECASE):
-            match = re.search(r'\banalyze\s+(\d+)', text, re.IGNORECASE)
-            n = int(match.group(1)) if match else 50
-            n = min(max(n, 10), 100)
-            
-            history = group_histories.get(chat_id, [])[-n:]
-            if not history:
-                await update.message.reply_text("⚠️ Not enough message history to analyze yet.", reply_to_message_id=update.message.message_id)
+        # --- ROUTE A: Group Analyze Command (English or Russian) ---
+        if is_group and is_mentioned:
+            analyze_match = re.search(r'\b(analyze|анализ)\b', text, re.IGNORECASE)
+            if analyze_match:
+                command_word = analyze_match.group(1).lower()
+                is_russian = command_word == 'анализ'
+                
+                # Extract N (number of messages)
+                n_match = re.search(rf'{re.escape(command_word)}\s+(\d+)', text, re.IGNORECASE)
+                n = int(n_match.group(1)) if n_match else 50
+                n = min(max(n, 5), 100)
+                
+                history = group_histories.get(chat_id, [])[-n:]
+                if not history:
+                    await update.message.reply_text("⚠️ Not enough message history to analyze yet.", reply_to_message_id=update.message.message_id)
+                    return
+
+                formatted_history = "\n".join([f"[{msg['user']}]: {msg['text']}" for msg in history])
+                
+                # Choose prompt based on language
+                if is_russian:
+                    analyze_prompt = (
+                        "Проанализируй эти сообщения. Скажи, кто был прав, если был спор, "
+                        "и дай ссылки на доказательства, почему он прав. Будь объективным, кратким и форматируй красиво.\n\n"
+                        f"Сообщения:\n{formatted_history}"
+                    )
+                else:
+                    analyze_prompt = (
+                        "Analyze these messages. Tell me which user was right if there was some debate "
+                        "and give me links to proofs why he is right. Be objective, concise, and format nicely.\n\n"
+                        f"Messages:\n{formatted_history}"
+                    )
+                
+                messages_for_api = [{"role": "user", "content": analyze_prompt}]
+                ai_reply = await call_openrouter(messages_for_api)
+                
+                await update.message.reply_text(
+                    format_for_telegram(ai_reply), 
+                    parse_mode="HTML", 
+                    reply_to_message_id=update.message.message_id
+                )
                 return
 
-            formatted_history = "\n".join([f"[{msg['user']}]: {msg['text']}" for msg in history])
-            analyze_prompt = (
-                "Analyze these messages. Tell me which user was right if there was some debate "
-                "and give me links to proofs why he is right. Be objective, concise, and format nicely.\n\n"
-                f"Messages:\n{formatted_history}"
-            )
-            
-            messages_for_api = [{"role": "user", "content": analyze_prompt}]
-            ai_reply = await call_openrouter(messages_for_api)
-            
-            await update.message.reply_text(
-                format_for_telegram(ai_reply), 
-                parse_mode="HTML", 
-                reply_to_message_id=update.message.message_id
-            )
-            return
-
-        # --- ROUTE B: Group Mention ---
+        # --- ROUTE B: Group Mention (Regular chat) ---
         elif is_group and is_mentioned:
             clean_text = re.sub(rf'@{re.escape(BOT_USERNAME)}\s*', '', text, flags=re.IGNORECASE).strip()
-            user_content = [{"type": "text", "text": clean_text}]
-            if image_content:
-                user_content.append(image_content)
-                
-            messages_for_api = [{"role": "system", "content": SYSTEM_PROMPT}] + [{"role": "user", "content": user_content}]
+            messages_for_api = [{"role": "system", "content": SYSTEM_PROMPT}] + [{"role": "user", "content": clean_text}]
             ai_reply = await call_openrouter(messages_for_api)
             
             await update.message.reply_text(
@@ -157,11 +163,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_id not in user_histories:
                 user_histories[user_id] = []
 
-            user_content = [{"type": "text", "text": text}]
-            if image_content:
-                user_content.append(image_content)
-
-            user_histories[user_id].append({"role": "user", "content": user_content})
+            user_histories[user_id].append({"role": "user", "content": text})
             if len(user_histories[user_id]) > MAX_HISTORY:
                 user_histories[user_id] = user_histories[user_id][-MAX_HISTORY:]
 
@@ -190,6 +192,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_to_message_id=update.message.message_id if is_group else None
         )
+    
+    finally:
+        # Always cancel the typing task when done
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
 
 async def call_openrouter(messages: list) -> str:
     """Helper function with SAFE EXTRACTION to prevent NoneType errors."""
@@ -200,11 +210,9 @@ async def call_openrouter(messages: list) -> str:
         temperature=0.7
     )
     
-    # 1. Check if response or choices is None (common OpenRouter free tier glitch)
     if not response or not response.choices:
         raise Exception("The AI model is currently overloaded or rate-limited. Please try again in a moment.")
     
-    # 2. Safely get the first choice
     choice = response.choices[0]
     if not choice or not choice.message or not choice.message.content:
         raise Exception("The AI returned an empty response. Please try again.")
@@ -221,7 +229,7 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_history))
-    app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.PHOTO, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print(f"✅ Bot @{BOT_USERNAME} is running with model: {MODEL_NAME}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
