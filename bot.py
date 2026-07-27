@@ -14,11 +14,18 @@ from openai import OpenAI
 # Load environment variables
 load_dotenv()
 
+# CONSTANT: Bot username (without the @)
+BOT_USERNAME = "arc_pet_bot"
+
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_NAME = os.getenv("OPENROUTER_MODEL")
 
-SYSTEM_PROMPT = "Your answer should contain minimal required info. Less is better. It should contain less than 1200 characters. Be direct and concise."
+SYSTEM_PROMPT = (
+    "Your answer should contain minimal required info. Less is better. "
+    "It should contain less than 1200 characters. Be direct and concise. "
+    "Always reply in plain text or markdown, never try to generate or return image files."
+)
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -48,12 +55,14 @@ def format_for_telegram(text: str) -> str:
     text = re.sub(r'\*([^\n*]+)\*', r'<i>\1</i>', text)
     return text
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Hello! I'm an AI assistant powered by OpenRouter.\n"
+        f"👋 Hello! I'm @{BOT_USERNAME}, an AI assistant powered by OpenRouter.\n"
         f"Send me any message (or photo!) and I'll reply. History limit: {MAX_HISTORY} messages.\n"
-        "In groups, tag me (@botname) to talk. Use '@botname analyze [10-200]' to analyze recent chat.\n\n"
-        "In case of error try same message again."
+        f"In groups, tag me (@{BOT_USERNAME}) to talk. Use '@{BOT_USERNAME} analyze [10-100]' to analyze recent chat.\n\n"
+        "In case of error try same message again.\n"
+        "V0.14"
     )
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -66,27 +75,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
     chat_type = update.message.chat.type
     is_group = chat_type in ['group', 'supergroup']
-    bot_username = context.bot.username
     
-    # Get text (from caption if it's a photo, otherwise from text)
     text = update.message.text or update.message.caption or ""
-    is_mentioned = is_group and f"@{bot_username}" in text
+    is_mentioned = is_group and f"@{BOT_USERNAME.lower()}" in text.lower()
 
-    # 1. Handle Image (if present)
+    # Handle Image (Download & Convert to Base64 for API)
     image_content = None
     if update.message.photo:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-        photo = update.message.photo[-1] # Highest resolution
+        photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         
-        # Download to temp file and convert to base64 for OpenRouter
         with tempfile.NamedTemporaryFile(delete=True, suffix=".jpg") as tmp:
             await file.download(custom_path=tmp.name)
             with open(tmp.name, "rb") as f:
                 img_base64 = base64.b64encode(f.read()).decode('utf-8')
         image_content = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
 
-    # 2. Maintain Group History Buffer (for the 'analyze' command)
+    # Maintain Group History Buffer
     if is_group:
         if chat_id not in group_histories:
             group_histories[chat_id] = []
@@ -97,15 +103,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         group_histories[chat_id].append({"user": sender_name, "text": text})
         if len(group_histories[chat_id]) > MAX_GROUP_HISTORY:
-            group_histories[chat_id].pop(0) # Remove oldest
+            group_histories[chat_id].pop(0)
 
-    # 3. Route Logic
+    # Routing Logic
     try:
         # --- ROUTE A: Group Analyze Command ---
         if is_group and is_mentioned and re.search(r'\banalyze\b', text, re.IGNORECASE):
             match = re.search(r'\banalyze\s+(\d+)', text, re.IGNORECASE)
             n = int(match.group(1)) if match else 50
-            n = min(max(n, 10), 100) # Clamp between 10 and 100 for safety
+            n = min(max(n, 10), 100)
             
             history = group_histories.get(chat_id, [])[-n:]
             if not history:
@@ -115,8 +121,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             formatted_history = "\n".join([f"[{msg['user']}]: {msg['text']}" for msg in history])
             analyze_prompt = (
                 "Analyze these messages. Tell me which user was right if there was some debate "
-                "and give me links to proofs why he is right. Be objective, concise, and format strictly. "
-                "Answer in same language as messages in chat. \n\n"
+                "and give me links to proofs why he is right. Be objective, concise, and format nicely.\n\n"
                 f"Messages:\n{formatted_history}"
             )
             
@@ -130,9 +135,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # --- ROUTE B: Group Mention (No Memory) ---
+        # --- ROUTE B: Group Mention ---
         elif is_group and is_mentioned:
-            clean_text = re.sub(rf'@{re.escape(bot_username)}', '', text, flags=re.IGNORECASE).strip()
+            clean_text = re.sub(rf'@{re.escape(BOT_USERNAME)}\s*', '', text, flags=re.IGNORECASE).strip()
             user_content = [{"type": "text", "text": clean_text}]
             if image_content:
                 user_content.append(image_content)
@@ -147,8 +152,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # --- ROUTE C: Private Chat (With Memory) ---
-        else:
+        # --- ROUTE C: Private Chat ---
+        elif not is_group:
             if user_id not in user_histories:
                 user_histories[user_id] = []
 
@@ -165,11 +170,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             user_histories[user_id].append({"role": "assistant", "content": ai_reply})
             await update.message.reply_text(format_for_telegram(ai_reply), parse_mode="HTML")
+            
+        else:
+            return # Group chat, not mentioned, do nothing
 
     except BadRequest as e:
         logging.warning(f"HTML parsing failed, sending plain text: {e}")
-        # Fallback to plain text (simplified for brevity in fallback)
-        await update.message.reply_text(ai_reply if 'ai_reply' in locals() else "Error formatting response.", reply_to_message_id=update.message.message_id if is_group else None)
+        fallback_text = locals().get('ai_reply', "⚠️ Error formatting response.")
+        await update.message.reply_text(fallback_text, reply_to_message_id=update.message.message_id if is_group else None)
+        
     except Exception as e:
         logging.error(f"API Error: {e}")
         if not is_group and user_id in user_histories and user_histories[user_id]:
@@ -183,14 +192,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def call_openrouter(messages: list) -> str:
-    """Helper function to keep the main handler clean."""
+    """Helper function with SAFE EXTRACTION to prevent NoneType errors."""
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
         max_tokens=1024,
         temperature=0.7
     )
-    return response.choices[0].message.content
+    
+    # 1. Check if response or choices is None (common OpenRouter free tier glitch)
+    if not response or not response.choices:
+        raise Exception("The AI model is currently overloaded or rate-limited. Please try again in a moment.")
+    
+    # 2. Safely get the first choice
+    choice = response.choices[0]
+    if not choice or not choice.message or not choice.message.content:
+        raise Exception("The AI returned an empty response. Please try again.")
+    
+    return choice.message.content
 
 def main():
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -202,10 +221,9 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_history))
-    # Handle both text and photos
     app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.PHOTO, handle_message))
     
-    print(f"✅ Bot is running with model: {MODEL_NAME}")
+    print(f"✅ Bot @{BOT_USERNAME} is running with model: {MODEL_NAME}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
