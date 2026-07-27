@@ -1,10 +1,12 @@
 import os
 import logging
 import html
+import re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.error import BadRequest
 from openai import OpenAI
 
 # Load environment variables
