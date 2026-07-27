@@ -21,7 +21,7 @@ SYSTEM_PROMPT = "Your answer should contain minimal required info. Less is bette
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
-    timeout=30.0,
+    timeout=45.0,
     default_headers={
         "HTTP-Referer": "https://github.com/ZZH0C/telegram-ai-bot", 
         "X-Title": "Telegram AI Bot"
@@ -31,6 +31,29 @@ client = OpenAI(
 # Simple in-memory conversation history
 user_histories = {}
 MAX_HISTORY = 20
+
+def format_for_telegram(text: str) -> str:
+    """Converts standard Markdown from AI to Telegram-compatible HTML."""
+    # 1. Escape HTML special characters to prevent injection
+    text = html.escape(text)
+    
+    # 2. Convert Markdown code blocks ```...``` to Telegram <pre>
+    text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
+    
+    # 3. Convert inline code `...` to Telegram <code>
+    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+    
+    # 4. Convert Markdown links [text](url) to Telegram <a>
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+    
+    # 5. Convert bold **...** to Telegram <b>
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
+    
+    # 6. Convert italic *...* to Telegram <i> 
+    # (Restricted to single line to avoid crossing bullet points and breaking parsing)
+    text = re.sub(r'\*([^\n*]+)\*', r'<i>\1</i>', text)
+    
+    return text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -70,12 +93,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages_for_api,
-            max_tokens=1000,
+            max_tokens=1024,
             temperature=0.7
         )
         ai_reply = response.choices[0].message.content
+        
+        # Convert Markdown to HTML
+        formatted_reply = format_for_telegram(ai_reply)
+        
         user_histories[user_id].append({"role": "assistant", "content": ai_reply})
-        await update.message.reply_text(ai_reply)
+        
+        try:
+            # Attempt to send with HTML formatting
+            await update.message.reply_text(formatted_reply, parse_mode="HTML")
+        except BadRequest as e:
+            # FALLBACK: If Telegram still rejects the formatting, strip it and send as plain text
+            logging.warning(f"HTML parsing failed, sending as plain text: {e}")
+            await update.message.reply_text(ai_reply)
         
     except Exception as e:
         logging.error(f"OpenRouter API error: {e}")
@@ -106,7 +140,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_history))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Bot is running. Press Ctrl+C to stop.")
+    print(f"✅ Bot is running with model: {MODEL_NAME}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
