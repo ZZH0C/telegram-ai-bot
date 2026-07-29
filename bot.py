@@ -1,41 +1,24 @@
 import os
 import logging
 import html
-import re
+import subprocess
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import BadRequest
 from openai import OpenAI
 
+# Import our modular files
+import prompts
+import constants
+
 # Load environment variables
 load_dotenv()
-
-# CONSTANT: Bot username (without the @)
-BOT_USERNAME = "arc_pet_bot"
 
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_NAME = os.getenv("OPENROUTER_MODEL")
-
-SYSTEM_PROMPT = (
-    "Your answer should contain minimal required info. Less is better. "
-    "It should contain less than 1200 characters. Be direct and concise."
-)
-
-# Language-specific analyze prompts
-ANALYZE_PROMPT_EN = (
-    "Analyze these messages. Tell me which user was right if there was some debate "
-    "and give me links to proofs why he is right. Be objective, concise, and format nicely.\n\n"
-    "Messages:\n{messages}"
-)
-
-ANALYZE_PROMPT_RU = (
-    "Проанализируй эти сообщения. Скажи, кто из пользователей был прав, если был спор, "
-    "и дай ссылки на доказательства, почему он прав. Будь объективным, кратким и оформи ответ красиво.\n\n"
-    "Сообщения:\n{messages}"
-)
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -47,13 +30,17 @@ client = OpenAI(
     }
 )
 
-# Private chat history
+# Memory Stores
 user_histories = {}
-MAX_HISTORY = 20
-
-# Group chat rolling buffer (in-memory only, clears on restart)
 group_histories = {}
-MAX_GROUP_HISTORY = 200
+
+def get_version() -> str:
+    """Dynamically gets version based on Git commit count, with a fallback."""
+    try:
+        commit_count = subprocess.check_output(['git', 'rev-list', '--count', 'HEAD']).decode('utf-8').strip()
+        return f"v0.{commit_count}A"
+    except Exception:
+        return "v0.A" # Fallback if git is not available
 
 def format_for_telegram(text: str) -> str:
     """Converts standard Markdown from AI to Telegram-compatible HTML."""
@@ -67,19 +54,48 @@ def format_for_telegram(text: str) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"👋 Hello! I'm @{BOT_USERNAME}, an AI assistant powered by OpenRouter.\n"
-        f"Send me any message and I'll reply. History limit: {MAX_HISTORY} messages.\n\n"
-        f"In groups, tag me (@{BOT_USERNAME}) to talk.\n"
-        f"Use '@{BOT_USERNAME} analyze [5-100]' (or 'анализ [5-100]') to analyze the last N(or 50 if empty) messages in the chat. "
+        f"👋 Hello! I'm @{constants.BOT_USERNAME}, an AI assistant powered by OpenRouter.\n"
+        f"Send me any message and I'll reply. History limit: {constants.MAX_HISTORY} messages.\n\n"
+        f"In groups, tag me (@{constants.BOT_USERNAME}) to talk.\n"
+        f"Use '@{constants.BOT_USERNAME} analyze [5-100]' (or 'анализ [5-100]') to analyze the last N (or 50 if empty) messages in the chat. "
         f"I'll look for debates and tell you who was right with proof. No additional info required.\n\n"
-        "In case of error try same message again.\n"
-        "V0.16"
+        "In case of error try same message again."
     )
+
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    version = get_version()
+    text = (
+        f"🤖 **Bot Info** (Version {version})\n\n"
+        f"**Commands:**\n"
+        f"/start - Start the bot and see greeting\n"
+        f"/info - Show this information menu\n"
+        f"/clear - Clear your conversation history\n\n"
+        f"**Group Shortcuts:**\n"
+        f"Tag me (@{constants.BOT_USERNAME}) to ask a question.\n"
+        f"Use `@{constants.BOT_USERNAME} analyze [5-100]` (or `анализ [5-100]`) to analyze recent chat."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_histories.pop(user_id, None)
     await update.message.reply_text("🧹 Conversation history cleared.")
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restricted command to check bot memory status."""
+    user = update.message.from_user
+    if user.username and user.username.lower() == constants.ADMIN_USERNAME:
+        private_msgs = sum(len(h) for h in user_histories.values())
+        group_msgs = sum(len(h) for h in group_histories.values())
+        
+        status_text = (
+            f"📊 **Bot Status** (Version {get_version()})\n\n"
+            f"👤 Active private users: {len(user_histories)}\n"
+            f"💬 Private messages in memory: {private_msgs}\n"
+            f"👥 Active groups: {len(group_histories)}\n"
+            f"💬 Group messages in memory: {group_msgs}"
+        )
+        await update.message.reply_text(status_text, parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -88,7 +104,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = chat_type in ['group', 'supergroup']
     
     text = update.message.text or ""
-    is_mentioned = is_group and f"@{BOT_USERNAME.lower()}" in text.lower()
+    is_mentioned = is_group and f"@{constants.BOT_USERNAME.lower()}" in text.lower()
 
     # Maintain Group History Buffer
     if is_group:
@@ -100,19 +116,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sender_name += f" (@{update.message.from_user.username})"
             
         group_histories[chat_id].append({"user": sender_name, "text": text})
-        if len(group_histories[chat_id]) > MAX_GROUP_HISTORY:
+        if len(group_histories[chat_id]) > constants.MAX_GROUP_HISTORY:
             group_histories[chat_id].pop(0)
 
     # Routing Logic
     try:
         # --- ROUTE A: Group Analyze Command ---
-        if is_group and is_mentioned and re.search(r'\b(analyze|анализ)\b', text, re.IGNORECASE):
-            match = re.search(r'\b(analyze|анализ)\s+(\d+)', text, re.IGNORECASE)
-            n = int(match.group(2)) if match else 50
+        match = constants.ANALYZE_REGEX.search(text)
+        if is_group and is_mentioned and match:
+            n_str = match.group(2)
+            n = int(n_str) if n_str else 50
             n = min(max(n, 5), 100)
             
-            # Detect language
-            is_russian = 'анализ' in text.lower()
+            is_russian = bool(constants.RUSSIAN_ANALYZE_REGEX.search(text))
             
             history = group_histories.get(chat_id, [])[-n:]
             if not history:
@@ -120,13 +136,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             formatted_history = "\n".join([f"[{msg['user']}]: {msg['text']}" for msg in history])
-            analyze_prompt = (ANALYZE_PROMPT_RU if is_russian else ANALYZE_PROMPT_EN).format(messages=formatted_history)
+            analyze_prompt = (prompts.ANALYZE_PROMPT_RU if is_russian else prompts.ANALYZE_PROMPT_EN).format(messages=formatted_history)
             
             messages_for_api = [{"role": "user", "content": analyze_prompt}]
             
-            # Show typing indicator
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            
             ai_reply = await call_openrouter(messages_for_api)
             
             await update.message.reply_text(
@@ -138,13 +152,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # --- ROUTE B: Group Mention ---
         elif is_group and is_mentioned:
-            clean_text = re.sub(rf'@{re.escape(BOT_USERNAME)}\s*', '', text, flags=re.IGNORECASE).strip()
+            clean_text = constants.BOT_MENTION_REGEX.sub('', text).strip()
+            messages_for_api = [{"role": "system", "content": prompts.SYSTEM_PROMPT}] + [{"role": "user", "content": clean_text}]
             
-            messages_for_api = [{"role": "system", "content": SYSTEM_PROMPT}] + [{"role": "user", "content": clean_text}]
-            
-            # Show typing indicator
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            
             ai_reply = await call_openrouter(messages_for_api)
             
             await update.message.reply_text(
@@ -160,14 +171,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_histories[user_id] = []
 
             user_histories[user_id].append({"role": "user", "content": text})
-            if len(user_histories[user_id]) > MAX_HISTORY:
-                user_histories[user_id] = user_histories[user_id][-MAX_HISTORY:]
+            if len(user_histories[user_id]) > constants.MAX_HISTORY:
+                user_histories[user_id] = user_histories[user_id][-constants.MAX_HISTORY:]
 
-            messages_for_api = [{"role": "system", "content": SYSTEM_PROMPT}] + user_histories[user_id]
+            messages_for_api = [{"role": "system", "content": prompts.SYSTEM_PROMPT}] + user_histories[user_id]
             
-            # Show typing indicator
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            
             ai_reply = await call_openrouter(messages_for_api)
             
             user_histories[user_id].append({"role": "assistant", "content": ai_reply})
@@ -194,7 +203,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def call_openrouter(messages: list) -> str:
-    """Helper function with SAFE EXTRACTION to prevent NoneType errors."""
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
@@ -211,20 +219,29 @@ async def call_openrouter(messages: list) -> str:
     
     return choice.message.content
 
+async def post_init(application: Application) -> None:
+    """Sets up the Telegram Menu Commands (excluding /status)"""
+    await application.bot.set_my_commands([
+        BotCommand("start", "Start the bot and see greeting"),
+        BotCommand("info", "Bot info, version, and commands"),
+        BotCommand("clear", "Clear your conversation history")
+    ])
+
 def main():
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
     
     if not BOT_TOKEN or not OPENROUTER_API_KEY:
         raise ValueError("Missing tokens in .env")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("clear", clear_history))
-    # Handle text messages only (removed filters.PHOTO)
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print(f"✅ Bot @{BOT_USERNAME} is running with model: {MODEL_NAME}")
+    print(f"✅ Bot @{constants.BOT_USERNAME} is running with model: {MODEL_NAME} | Version: {get_version()}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
