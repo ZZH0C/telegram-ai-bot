@@ -68,8 +68,9 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/info - Show this information menu\n"
         f"/clear - Clear your conversation history\n\n"
         f"**Group Shortcuts:**\n"
-        f"Tag me (@{constants.BOT_USERNAME}) to ask a question.\n"
-        f"Use `@{constants.BOT_USERNAME} analyze [5-100]` (or `анализ [5-100]`) to analyze recent chat."
+        f"Tag me `@{constants.BOT_USERNAME}` to ask a question.\n"
+        f"Use `@{constants.BOT_USERNAME} analyze` (or `@{constants.BOT_USERNAME} анализ`) to analyze recent chat."
+        f"You can add number from 5 to 100 to analyze specific number of last messages in chat."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
