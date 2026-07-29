@@ -1,10 +1,17 @@
 import os
 import re
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Memory Limits
 MAX_HISTORY = 20
 MAX_GROUP_HISTORY = 200
 
+
+BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL_NAME = os.getenv("OPENROUTER_MODEL")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").lower()
 

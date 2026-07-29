@@ -1,29 +1,21 @@
-import os
-import logging
 import html
+import logging
 import re
 import subprocess
-from dotenv import load_dotenv
+
+from openai import OpenAI
 from telegram import Update, BotCommand
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import BadRequest
-from openai import OpenAI
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Import our modular files
-import prompts
 import constants
+import prompts
 
-# Load environment variables
-load_dotenv()
-
-BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = os.getenv("OPENROUTER_MODEL")
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
+    api_key=constants.OPENROUTER_API_KEY,
     timeout=45.0,
     default_headers={
         "HTTP-Referer": "https://github.com/ZZH0C/telegram-ai-bot",
@@ -219,7 +211,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def call_openrouter(messages: list) -> str:
     response = client.chat.completions.create(
-        model=MODEL_NAME,
+        model=constants.MODEL_NAME,
         messages=messages,
         max_tokens=1024,
         temperature=0.7
@@ -247,10 +239,10 @@ async def post_init(application: Application) -> None:
 def main():
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-    if not BOT_TOKEN or not OPENROUTER_API_KEY:
+    if not constants.BOT_TOKEN or not constants.OPENROUTER_API_KEY:
         raise ValueError("Missing tokens in .env")
 
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(constants.BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("info", info))
@@ -258,7 +250,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print(f"✅ Bot @{constants.BOT_USERNAME} is running with model: {MODEL_NAME} | Version: {get_version()}")
+    print(f"✅ Bot @{constants.BOT_USERNAME} is running with model: {constants.MODEL_NAME} | Version: {get_version()}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
