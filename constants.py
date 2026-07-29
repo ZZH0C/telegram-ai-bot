@@ -1,8 +1,12 @@
+import os
 import re
 
 # Memory Limits
 MAX_HISTORY = 20
 MAX_GROUP_HISTORY = 200
+
+BOT_USERNAME = os.getenv("BOT_USERNAME")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").lower()
 
 # Regex for analyze command with English/Russian misspell variations
 # Matches: analyze, analyse, analiz, анализ, аналих, etc.
