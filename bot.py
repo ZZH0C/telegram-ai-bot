@@ -20,8 +20,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_NAME = os.getenv("OPENROUTER_MODEL")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "arc_pet_bot")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").lower()  # Must be set in .env
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -52,7 +50,7 @@ def format_for_telegram(text: str) -> str:
     text = html.escape(text)
     text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
     text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+    text = re.sub(r'\[([^]]+)]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
     text = re.sub(r'\*([^\n*]+)\*', r'<i>\1</i>', text)
     return text
@@ -94,17 +92,19 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Restricted command to check bot memory status."""
     user = update.message.from_user
     if user.username and user.username.lower() == constants.ADMIN_USERNAME:
-        private_msgs = sum(len(h) for h in user_histories.values())
-        group_msgs = sum(len(h) for h in group_histories.values())
+        private_msgs_len = sum(len(h) for h in user_histories.values())
+        group_msgs_len = sum(len(h) for h in group_histories.values())
 
         status_text = (
             f"📊 **Bot Status** (Version {get_version()})\n\n"
             f"👤 Active private users: {len(user_histories)}\n"
-            f"💬 Private messages in memory: {private_msgs}\n"
+            f"💬 Private messages in memory: {private_msgs_len}\n"
             f"👥 Active groups: {len(group_histories)}\n"
-            f"💬 Group messages in memory: {group_msgs}"
+            f"💬 Group messages in memory: {group_msgs_len}"
         )
         await update.message.reply_text(status_text, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"📊 **Bot Status** (Version {get_version()})\n\n")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
