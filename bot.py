@@ -68,8 +68,8 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/info - Show this information menu\n"
         f"/clear - Clear your conversation history\n\n"
         f"**Group Shortcuts:**\n"
-        f"Tag me `@{constants.BOT_USERNAME}` to ask a question.\n"
-        f"Use `@{constants.BOT_USERNAME} analyze` (or `@{constants.BOT_USERNAME} анализ`) to analyze recent chat."
+        f"Tag me `@{constants.BOT_USERNAME}` to ask a question.\n\n"
+        f"Use `@{constants.BOT_USERNAME} analyze` (or `@{constants.BOT_USERNAME} анализ`) to analyze recent chat.\n"
         f"You can add number from 5 to 100 to analyze specific number of last messages in chat."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -125,13 +125,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Routing Logic
     try:
         # --- ROUTE A: Group Analyze Command ---
-        match = constants.ANALYZE_REGEX_RU.search(text)
-        if is_group and is_mentioned and match:
+        match_en = constants.ANALYZE_REGEX_EN.search(text)
+        match_ru = constants.ANALYZE_REGEX_RU.search(text)
+
+        if is_group and is_mentioned and (match_en or match_ru):
+            # Use the Russian match if it exists, otherwise the English one
+            match = match_ru if match_ru else match_en
+            is_russian = bool(match_ru)
+
+            # Now safe to call group(2) because BOTH regexes have it
             n_str = match.group(2)
             n = int(n_str) if n_str else 50
             n = min(max(n, 5), 100)
-
-            is_english = bool(constants.ANALYZE_REGEX_EN.search(text))
 
             history = group_histories.get(chat_id, [])[-n:]
             if not history:
@@ -140,7 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             formatted_history = "\n".join([f"[{msg['user']}]: {msg['text']}" for msg in history])
-            analyze_prompt = (prompts.ANALYZE_PROMPT_EN if is_english else prompts.ANALYZE_PROMPT_RU).format(
+            analyze_prompt = (prompts.ANALYZE_PROMPT_RU if is_russian else prompts.ANALYZE_PROMPT_EN).format(
                 messages=formatted_history)
 
             messages_for_api = [{"role": "user", "content": analyze_prompt}]
@@ -208,7 +213,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_to_message_id=update.message.message_id if is_group else None
         )
-
 
 async def call_openrouter(messages: list) -> str:
     response = client.chat.completions.create(
