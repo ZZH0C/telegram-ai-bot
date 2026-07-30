@@ -32,9 +32,9 @@ def get_version() -> str:
     """Dynamically gets version based on Git commit count, with a fallback."""
     try:
         commit_count = subprocess.check_output(['git', 'rev-list', '--count', 'HEAD']).decode('utf-8').strip()
-        return f"v0.{commit_count}A"
+        return f"v0.{commit_count}a"
     except Exception:
-        return "v0.A"  # Fallback if git is not available
+        return "v0.0a"  # Fallback if git is not available
 
 
 def format_for_telegram(text: str) -> str:
