@@ -13,7 +13,6 @@ MAX_GROUP_HISTORY = 200
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "admin")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "openrouter/free")
 
 # Multiple Admins: split by comma, strip whitespace, lowercase
@@ -34,15 +33,17 @@ BOT_MENTION_REGEX = re.compile(rf'@{re.escape(BOT_USERNAME)}\s*', re.IGNORECASE)
 CONFIG_FILE = "config.json"
 
 
-def get_config():
+def get_config() -> dict:
     if not os.path.exists(CONFIG_FILE):
-        # Fallback defaults if config.json is missing
-        return {
-            "MODEL_NAME": os.getenv("MODEL_NAME", "openrouter/free"),
-            "SYSTEM_PROMPT": "You are a helpful assistant.",
+        default_config = {
+            "MODEL_NAME": os.getenv("MODEL_NAME", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+            "SYSTEM_PROMPT": "Ты — полезный ассистент. Отвечай кратко и по делу.",
             "ANALYZE_PROMPT_EN": "Analyze these messages: {messages}",
             "ANALYZE_PROMPT_RU": "Проанализируй эти сообщения: {messages}"
         }
+        save_config(default_config)
+        return default_config
+
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
