@@ -4,7 +4,7 @@ import re
 import subprocess
 
 from openai import OpenAI
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -25,6 +25,21 @@ client = OpenAI(
 user_histories = {}
 group_histories = {}
 
+DEFAULT_COMMANDS = [
+    BotCommand("start", "Start the bot"),
+    BotCommand("info", "Bot info and commands"),
+    BotCommand("clear", "Clear conversation history")
+]
+
+ADMIN_COMMANDS = [
+    BotCommand("start", "Start the bot"),
+    BotCommand("info", "Bot info and commands"),
+    BotCommand("clear", "Clear conversation history"),
+    BotCommand("settings", "View bot configuration (Admin)"),
+    BotCommand("configure", "Change bot settings (Admin)"),
+    BotCommand("status", "Check bot memory (Admin)")
+]
+
 
 def get_version() -> str:
     try:
@@ -44,10 +59,8 @@ def format_for_telegram(text: str) -> str:
     return text
 
 
-# --- Helper Functions for Settings UI ---
 async def _send_settings(target_obj, context: ContextTypes.DEFAULT_TYPE):
     config = constants.get_config()
-    # Truncate prompts for display to avoid hitting Telegram's 4096 char limit
     sys_prompt_display = (config['SYSTEM_PROMPT'][:200] + "...") if len(config['SYSTEM_PROMPT']) > 200 else config[
         'SYSTEM_PROMPT']
     en_prompt_display = (config['ANALYZE_PROMPT_EN'][:200] + "...") if len(config['ANALYZE_PROMPT_EN']) > 200 else \
@@ -64,9 +77,9 @@ async def _send_settings(target_obj, context: ContextTypes.DEFAULT_TYPE):
     )
     keyboard = [[InlineKeyboardButton("⚙️ Configure", callback_data="configure_menu")]]
 
-    if hasattr(target_obj, 'reply_text'):  # It's a Message
+    if hasattr(target_obj, 'reply_text'):
         await target_obj.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:  # It's a CallbackQuery
+    else:
         await target_obj.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -85,7 +98,6 @@ async def _show_configure_menu(target_obj, context: ContextTypes.DEFAULT_TYPE):
         await target_obj.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-# --- Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 Hello! I'm @{constants.BOT_USERNAME}, an AI assistant powered by OpenRouter.\n"
@@ -106,9 +118,8 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/info - Show this information menu\n"
         f"/clear - Clear your conversation history\n\n"
         f"**Group Shortcuts:**\n"
-        f"Tag me `@{constants.BOT_USERNAME}` to ask a question.\n\n"
-        f"Use `@{constants.BOT_USERNAME} analyze` (or `@{constants.BOT_USERNAME} анализ`) to analyze recent chat.\n"
-        f"You can add number from 5 to 100 to analyze specific number of last messages in chat."
+        f"Tag me `@{constants.BOT_USERNAME}` to ask a question.\n"
+        f"Use `@{constants.BOT_USERNAME} analyze` to analyze recent chat."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -199,7 +210,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = chat_type in ['group', 'supergroup']
     text = update.message.text or ""
 
-    # 1. Intercept admin configuration input
+    if constants.is_admin(user.username or "") and not is_group:
+        if not context.user_data.get('admin_menu_set'):
+            await context.bot.set_my_commands(
+                ADMIN_COMMANDS,
+                scope=BotCommandScopeChat(chat_id=user.id)
+            )
+            context.user_data['admin_menu_set'] = True
+
     if constants.is_admin(user.username or "") and context.user_data.get('awaiting_config'):
         target = context.user_data.pop('awaiting_config')
         config = constants.get_config()
@@ -210,7 +228,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_settings(update.message, context)
         return
 
-    # 2. Normal Bot Logic
     is_mentioned = is_group and f"@{constants.BOT_USERNAME.lower()}" in text.lower()
 
     if is_group:
@@ -322,14 +339,7 @@ async def call_openrouter(messages: list) -> str:
 
 
 async def post_init(application: Application) -> None:
-    await application.bot.set_my_commands([
-        BotCommand("start", "Start the bot"),
-        BotCommand("info", "Bot info and commands"),
-        BotCommand("clear", "Clear conversation history"),
-        BotCommand("settings", "View bot configuration (Admin)"),
-        BotCommand("configure", "Change bot settings (Admin)"),
-        BotCommand("status", "Check bot memory (Admin)")
-    ])
+    await application.bot.set_my_commands(DEFAULT_COMMANDS)
 
 
 def main():
